@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <LittleFS.h>
 #include "config.h"
 #include "wifi_manager.h"
 #include "usb_host.h"
@@ -9,34 +10,35 @@ UsbHost     usbHost;
 Webserver   webserver;
 
 void setup() {
+    // Debug-Serial via UART0 (GPIO 1 TX / GPIO 3 RX).
+    // USB-Port ist im OTG-Host-Modus – KEIN USB-CDC.
     Serial.begin(115200);
-    delay(1000);
+    delay(500);
 
     Serial.println();
-    Serial.println("=============================");
-    Serial.println("  ZumoWifi – Garmin Gateway");
-    Serial.println("=============================");
-    Serial.println();
+    Serial.println("============================");
+    Serial.println("  ZumoWifi  –  ESP32-S2");
+    Serial.println("============================");
 
-    // Initialize LittleFS for web interface files
+    // Web-Interface aus LittleFS
     if (!LittleFS.begin(true)) {
-        Serial.println("[FS] LittleFS mount failed");
+        Serial.println("[FS] LittleFS Mount fehlgeschlagen!");
     } else {
-        Serial.println("[FS] LittleFS mounted");
+        Serial.println("[FS] LittleFS bereit");
     }
 
-    // Start WiFi (AP mode by default, can connect to existing network)
+    // WiFi – AP-Modus als Standard
     wifiManager.begin();
 
-    // Initialize USB Host for Garmin Zumo
+    // USB Host für USB-Stick (Port im OTG-Host-Modus nach Boot)
     usbHost.begin();
 
-    // Start web server
+    // Webserver
     webserver.begin(&usbHost);
 
-    Serial.println();
-    Serial.println("[READY] ZumoWifi is running");
-    Serial.printf("[READY] Web interface: http://%s\n", WiFi.softAPIP().toString().c_str());
+    Serial.println("[BEREIT] ZumoWifi läuft");
+    Serial.printf("[BEREIT] Web: http://%s\n",
+                  WiFi.softAPIP().toString().c_str());
 }
 
 void loop() {

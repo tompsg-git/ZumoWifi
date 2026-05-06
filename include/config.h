@@ -9,15 +9,17 @@
 // Web server
 #define WEB_PORT      80
 
-// USB Host
+// USB-Stick Mount-Punkt (FAT über USB MSC Host)
+#define USB_MOUNT_POINT  "/usb"
+
+// USB Host-Task Konfiguration
 #define USB_HOST_TASK_STACK  4096
 #define USB_HOST_TASK_PRIO   5
+#define MSC_TASK_STACK       4096
+#define MSC_TASK_PRIO        5
 
-// File system root for Garmin storage
-#define GARMIN_MOUNT_POINT  "/garmin"
+// Max. Dateigröße für Text-Editor (64 KB)
+#define EDITOR_MAX_SIZE      (64 * 1024)
 
-// LittleFS for web files
-#define WEB_FS_MOUNT        "/littlefs"
-
-// Max file upload size (16 MB)
-#define MAX_UPLOAD_SIZE     (16 * 1024 * 1024)
+// Max. Upload-Dateigröße (64 MB)
+#define MAX_UPLOAD_SIZE      (64 * 1024 * 1024)

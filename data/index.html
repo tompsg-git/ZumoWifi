@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="de">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -9,29 +9,29 @@
 <body>
     <header>
         <h1>ZumoWifi</h1>
-        <span id="status-badge" class="badge offline">Disconnected</span>
+        <span id="status-badge" class="badge offline">Kein Stick</span>
     </header>
 
     <nav>
-        <button class="tab active" data-tab="files">Files</button>
+        <button class="tab active" data-tab="files">Dateien</button>
         <button class="tab" data-tab="wifi">WiFi</button>
         <button class="tab" data-tab="info">Info</button>
     </nav>
 
-    <!-- Files Tab -->
+    <!-- Dateien-Tab -->
     <section id="tab-files" class="tab-content active">
         <div class="toolbar">
+            <button id="btn-up" title="Übergeordnetes Verzeichnis">&uarr;</button>
             <span id="current-path">/</span>
-            <button id="btn-up" title="Parent directory">&uarr; Up</button>
-            <button id="btn-refresh" title="Refresh">Refresh</button>
-            <button id="btn-mkdir" title="New folder">+ Folder</button>
-            <label class="btn-upload" title="Upload file">
-                Upload
+            <button id="btn-refresh" title="Aktualisieren">&#8635;</button>
+            <button id="btn-mkdir" title="Neuer Ordner">+ Ordner</button>
+            <label class="btn-upload" title="Datei hochladen">
+                &#8593; Upload
                 <input type="file" id="file-upload" multiple hidden>
             </label>
         </div>
         <div id="file-list" class="file-list">
-            <p class="placeholder">Connect a Garmin device via USB to browse files.</p>
+            <p class="placeholder">USB-Stick einstecken, um Dateien zu durchsuchen.</p>
         </div>
         <div id="upload-progress" class="progress-bar" hidden>
             <div id="progress-fill"></div>
@@ -39,36 +39,64 @@
         </div>
     </section>
 
-    <!-- WiFi Tab -->
+    <!-- WiFi-Tab -->
     <section id="tab-wifi" class="tab-content">
-        <h2>WiFi Settings</h2>
+        <h2>WiFi-Einstellungen</h2>
         <div class="card">
-            <h3>Current Connection</h3>
-            <p>Mode: <strong id="wifi-mode">AP</strong></p>
+            <h3>Aktuelle Verbindung</h3>
+            <p>Modus: <strong id="wifi-mode">AP</strong></p>
             <p>SSID: <strong id="wifi-ssid">ZumoWifi</strong></p>
             <p>IP: <strong id="wifi-ip">192.168.4.1</strong></p>
         </div>
         <div class="card">
-            <h3>Connect to Network</h3>
-            <button id="btn-scan">Scan Networks</button>
+            <h3>Netzwerk verbinden</h3>
+            <button id="btn-scan">Scannen</button>
             <div id="network-list"></div>
             <form id="wifi-form">
-                <input type="text" id="wifi-ssid-input" placeholder="SSID" required>
-                <input type="password" id="wifi-pass-input" placeholder="Password">
-                <button type="submit">Connect</button>
+                <input type="text"     id="wifi-ssid-input" placeholder="SSID" required>
+                <input type="password" id="wifi-pass-input" placeholder="Passwort">
+                <button type="submit">Verbinden</button>
             </form>
         </div>
     </section>
 
-    <!-- Info Tab -->
+    <!-- Info-Tab -->
     <section id="tab-info" class="tab-content">
-        <h2>Device Info</h2>
+        <h2>Geräteinformationen</h2>
         <div class="card">
-            <p>Device: <strong id="info-device">–</strong></p>
-            <p>Free Heap: <strong id="info-heap">–</strong></p>
+            <p>USB-Stick: <strong id="info-device">–</strong></p>
+            <p>Freier Heap: <strong id="info-heap">–</strong></p>
             <p>Uptime: <strong id="info-uptime">–</strong></p>
         </div>
     </section>
+
+    <!-- ── Editor-Modal ─────────────────────────────────────────── -->
+    <div id="editor-modal" class="modal" hidden>
+        <div class="modal-box">
+            <div class="modal-header">
+                <span id="editor-filename" class="editor-title">–</span>
+                <div class="modal-actions">
+                    <button id="btn-save" class="btn-primary">&#10003; Speichern</button>
+                    <button id="btn-close-editor" class="btn-danger">&#10005;</button>
+                </div>
+            </div>
+            <div id="editor-status" class="editor-status"></div>
+            <textarea id="editor-area" spellcheck="false" autocorrect="off"
+                      autocapitalize="off" autocomplete="off"></textarea>
+        </div>
+    </div>
+
+    <!-- Rename-Dialog -->
+    <div id="rename-modal" class="modal" hidden>
+        <div class="modal-box modal-small">
+            <h3>Umbenennen</h3>
+            <input type="text" id="rename-input" placeholder="Neuer Name">
+            <div class="modal-footer">
+                <button id="btn-rename-ok" class="btn-primary">OK</button>
+                <button id="btn-rename-cancel" class="btn-secondary">Abbrechen</button>
+            </div>
+        </div>
+    </div>
 
     <script src="app.js"></script>
 </body>

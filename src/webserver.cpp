@@ -1,58 +1,76 @@
 #include "webserver.h"
 
-extern WifiManager wifiManager;  // from main.cpp
+extern WifiManager wifiManager;
 
 void Webserver::begin(UsbHost* usb) {
     _usb = usb;
     setupRoutes();
     _server.begin();
-    Serial.printf("[WEB] Server started on port %d\n", WEB_PORT);
+    Serial.printf("[WEB] Server gestartet auf Port %d\n", WEB_PORT);
 }
 
 void Webserver::setupRoutes() {
-    // Serve web interface from LittleFS
+    // Web-Interface aus LittleFS
     _server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
 
-    // API endpoints
+    // Status
     _server.on("/api/status", HTTP_GET,
-        [this](AsyncWebServerRequest* req) { handleStatus(req); });
+        [this](AsyncWebServerRequest* r) { handleStatus(r); });
 
+    // Datei-Browser
     _server.on("/api/files", HTTP_GET,
-        [this](AsyncWebServerRequest* req) { handleListFiles(req); });
+        [this](AsyncWebServerRequest* r) { handleListFiles(r); });
 
     _server.on("/api/download", HTTP_GET,
-        [this](AsyncWebServerRequest* req) { handleDownloadFile(req); });
+        [this](AsyncWebServerRequest* r) { handleDownloadFile(r); });
 
     _server.on("/api/delete", HTTP_POST,
-        [this](AsyncWebServerRequest* req) { handleDeleteFile(req); });
+        [this](AsyncWebServerRequest* r) { handleDeleteFile(r); });
+
+    _server.on("/api/rename", HTTP_POST,
+        [this](AsyncWebServerRequest* r) { handleRenameEntry(r); });
 
     _server.on("/api/mkdir", HTTP_POST,
-        [this](AsyncWebServerRequest* req) { handleCreateDir(req); });
+        [this](AsyncWebServerRequest* r) { handleCreateDir(r); });
 
     _server.on("/api/upload", HTTP_POST,
-        [this](AsyncWebServerRequest* req) { handleUploadStart(req); },
-        [this](AsyncWebServerRequest* req, const String& filename,
-               size_t index, uint8_t* data, size_t len, bool final) {
-            handleUploadData(req, filename, index, data, len, final);
+        [this](AsyncWebServerRequest* r) { handleUploadStart(r); },
+        [this](AsyncWebServerRequest* r, const String& fn,
+               size_t idx, uint8_t* data, size_t len, bool fin) {
+            handleUploadData(r, fn, idx, data, len, fin);
         });
 
+    // Text-Editor
+    _server.on("/api/file/read", HTTP_GET,
+        [this](AsyncWebServerRequest* r) { handleReadFile(r); });
+
+    _server.on("/api/file/write", HTTP_POST,
+        [this](AsyncWebServerRequest* r) {},
+        nullptr,
+        [this](AsyncWebServerRequest* r, uint8_t* d,
+               size_t len, size_t idx, size_t total) {
+            handleWriteFile(r, d, len, idx, total);
+        });
+
+    // WiFi
     _server.on("/api/wifi/scan", HTTP_GET,
-        [this](AsyncWebServerRequest* req) { handleWifiScan(req); });
+        [this](AsyncWebServerRequest* r) { handleWifiScan(r); });
 
     _server.on("/api/wifi/connect", HTTP_POST,
-        [this](AsyncWebServerRequest* req) { handleWifiConnect(req); });
+        [this](AsyncWebServerRequest* r) { handleWifiConnect(r); });
 
-    // 404
-    _server.onNotFound([](AsyncWebServerRequest* req) {
-        req->send(404, "application/json", "{\"error\":\"Not found\"}");
+    _server.onNotFound([](AsyncWebServerRequest* r) {
+        r->send(404, "application/json", "{\"error\":\"Nicht gefunden\"}");
     });
 }
 
-// ── API Handlers ────────────────────────────────────────────────────
+// ── Status ───────────────────────────────────────────────────────────
 
 void Webserver::handleStatus(AsyncWebServerRequest* req) {
     JsonDocument doc;
-    doc["device"]    = _usb->isDeviceConnected() ? _usb->getDeviceInfo() : "disconnected";
+    doc["device"]    = _usb->isDeviceConnected()
+                       ? _usb->getDeviceInfo()
+                       : "disconnected";
     doc["wifi_mode"] = wifiManager.getMode();
     doc["wifi_ssid"] = wifiManager.getSSID();
     doc["wifi_ip"]   = wifiManager.getIP();
@@ -64,12 +82,15 @@ void Webserver::handleStatus(AsyncWebServerRequest* req) {
     req->send(200, "application/json", json);
 }
 
+// ── Datei-Listing ────────────────────────────────────────────────────
+
 void Webserver::handleListFiles(AsyncWebServerRequest* req) {
     String path = req->hasParam("path") ? req->getParam("path")->value() : "/";
 
     std::vector<FileEntry> entries;
     if (!_usb->listDirectory(path, entries)) {
-        req->send(503, "application/json", "{\"error\":\"Device not connected or read error\"}");
+        req->send(503, "application/json",
+                  "{\"error\":\"Stick nicht verbunden oder Lesefehler\"}");
         return;
     }
 
@@ -77,11 +98,11 @@ void Webserver::handleListFiles(AsyncWebServerRequest* req) {
     doc["path"] = path;
     JsonArray files = doc["files"].to<JsonArray>();
 
-    for (auto& entry : entries) {
+    for (auto& e : entries) {
         JsonObject obj = files.add<JsonObject>();
-        obj["name"]  = entry.name;
-        obj["size"]  = entry.size;
-        obj["isDir"] = entry.isDir;
+        obj["name"]  = e.name;
+        obj["size"]  = e.size;
+        obj["isDir"] = e.isDir;
     }
 
     String json;
@@ -89,73 +110,83 @@ void Webserver::handleListFiles(AsyncWebServerRequest* req) {
     req->send(200, "application/json", json);
 }
 
+// ── Download (chunked) ────────────────────────────────────────────────
+
 void Webserver::handleDownloadFile(AsyncWebServerRequest* req) {
     if (!req->hasParam("path")) {
-        req->send(400, "application/json", "{\"error\":\"Missing path parameter\"}");
+        req->send(400, "application/json", "{\"error\":\"path fehlt\"}");
         return;
     }
 
     String path = req->getParam("path")->value();
     size_t fileSize = _usb->getFileSize(path);
 
-    if (fileSize == 0) {
-        req->send(404, "application/json", "{\"error\":\"File not found\"}");
+    if (fileSize == 0 && !_usb->fileExists(path)) {
+        req->send(404, "application/json", "{\"error\":\"Datei nicht gefunden\"}");
         return;
     }
 
-    // Stream file from Garmin device
-    // For large files, use chunked response
     AsyncWebServerResponse* response = req->beginChunkedResponse(
         "application/octet-stream",
-        [this, path, fileSize](uint8_t* buffer, size_t maxLen, size_t index) -> size_t {
+        [this, path, fileSize](uint8_t* buf, size_t maxLen, size_t index) -> size_t {
             if (index >= fileSize) return 0;
-
-            size_t toRead = min(maxLen, fileSize - index);
-            size_t bytesRead = toRead;
-
-            if (!_usb->readFile(path, buffer, bytesRead)) {
-                return 0;
-            }
-            return bytesRead;
+            int n = _usb->readFileChunk(path, index, buf, maxLen);
+            return (n > 0) ? (size_t)n : 0;
         });
 
-    // Extract filename from path
     int lastSlash = path.lastIndexOf('/');
-    String filename = (lastSlash >= 0) ? path.substring(lastSlash + 1) : path;
-    response->addHeader("Content-Disposition", "attachment; filename=\"" + filename + "\"");
-
+    String fn = (lastSlash >= 0) ? path.substring(lastSlash + 1) : path;
+    response->addHeader("Content-Disposition",
+                        "attachment; filename=\"" + fn + "\"");
     req->send(response);
 }
 
+// ── Löschen ───────────────────────────────────────────────────────────
+
 void Webserver::handleDeleteFile(AsyncWebServerRequest* req) {
     if (!req->hasParam("path", true)) {
-        req->send(400, "application/json", "{\"error\":\"Missing path parameter\"}");
+        req->send(400, "application/json", "{\"error\":\"path fehlt\"}");
         return;
     }
-
     String path = req->getParam("path", true)->value();
+    req->send(_usb->deleteEntry(path) ? 200 : 500,
+              "application/json",
+              _usb->deleteEntry(path) ? "{\"ok\":true}" : "{\"error\":\"Löschen fehlgeschlagen\"}");
+}
 
-    if (_usb->deleteFile(path)) {
+// ── Umbenennen ────────────────────────────────────────────────────────
+
+void Webserver::handleRenameEntry(AsyncWebServerRequest* req) {
+    if (!req->hasParam("from", true) || !req->hasParam("to", true)) {
+        req->send(400, "application/json", "{\"error\":\"from/to fehlt\"}");
+        return;
+    }
+    String from = req->getParam("from", true)->value();
+    String to   = req->getParam("to",   true)->value();
+
+    if (_usb->renameEntry(from, to)) {
         req->send(200, "application/json", "{\"ok\":true}");
     } else {
-        req->send(500, "application/json", "{\"error\":\"Delete failed\"}");
+        req->send(500, "application/json", "{\"error\":\"Umbenennen fehlgeschlagen\"}");
     }
 }
+
+// ── Verzeichnis anlegen ───────────────────────────────────────────────
 
 void Webserver::handleCreateDir(AsyncWebServerRequest* req) {
     if (!req->hasParam("path", true)) {
-        req->send(400, "application/json", "{\"error\":\"Missing path parameter\"}");
+        req->send(400, "application/json", "{\"error\":\"path fehlt\"}");
         return;
     }
-
     String path = req->getParam("path", true)->value();
-
     if (_usb->createDirectory(path)) {
         req->send(200, "application/json", "{\"ok\":true}");
     } else {
-        req->send(500, "application/json", "{\"error\":\"Create directory failed\"}");
+        req->send(500, "application/json", "{\"error\":\"Ordner anlegen fehlgeschlagen\"}");
     }
 }
+
+// ── Upload ────────────────────────────────────────────────────────────
 
 void Webserver::handleUploadStart(AsyncWebServerRequest* req) {
     req->send(200, "application/json", "{\"ok\":true}");
@@ -163,56 +194,110 @@ void Webserver::handleUploadStart(AsyncWebServerRequest* req) {
 
 void Webserver::handleUploadData(AsyncWebServerRequest* req, const String& filename,
                                   size_t index, uint8_t* data, size_t len, bool final) {
-    String targetDir = req->hasParam("path", true) ? req->getParam("path", true)->value() : "/";
-    String fullPath = targetDir + "/" + filename;
+    String dir = req->hasParam("path", true)
+                 ? req->getParam("path", true)->value()
+                 : "/";
+    String fullPath = (dir == "/") ? "/" + filename : dir + "/" + filename;
 
-    if (index == 0) {
-        Serial.printf("[WEB] Upload start: %s\n", fullPath.c_str());
+    if (!_usb->writeFileChunk(fullPath, index, data, len, final)) {
+        Serial.printf("[WEB] Upload-Fehler bei '%s'\n", fullPath.c_str());
     }
-
-    // Write chunk to Garmin device
-    _usb->writeFile(fullPath, data, len);
 
     if (final) {
-        Serial.printf("[WEB] Upload complete: %s (%d bytes)\n", fullPath.c_str(), index + len);
+        Serial.printf("[WEB] Upload abgeschlossen: %s (%u Bytes)\n",
+                      fullPath.c_str(), (unsigned)(index + len));
     }
 }
+
+// ── Text-Editor: Datei lesen ──────────────────────────────────────────
+
+void Webserver::handleReadFile(AsyncWebServerRequest* req) {
+    if (!req->hasParam("path")) {
+        req->send(400, "application/json", "{\"error\":\"path fehlt\"}");
+        return;
+    }
+    String path = req->getParam("path")->value();
+
+    String content;
+    if (!_usb->readTextFile(path, content)) {
+        req->send(500, "application/json",
+                  "{\"error\":\"Lesen fehlgeschlagen oder Datei zu groß (>64KB)\"}");
+        return;
+    }
+
+    // Roher Text als Antwort – JavaScript nutzt dies direkt im Editor
+    req->send(200, "text/plain; charset=utf-8", content);
+}
+
+// ── Text-Editor: Datei schreiben ──────────────────────────────────────
+
+void Webserver::handleWriteFile(AsyncWebServerRequest* req,
+                                 uint8_t* data, size_t len,
+                                 size_t index, size_t total) {
+    // Body akkumulieren (max. EDITOR_MAX_SIZE)
+    static String s_path;
+    static String s_body;
+
+    if (index == 0) {
+        s_body = "";
+        s_path = req->hasParam("path")
+                 ? req->getParam("path")->value()
+                 : "";
+        s_body.reserve(total);
+    }
+
+    s_body.concat(reinterpret_cast<const char*>(data), len);
+
+    if (index + len == total) {
+        if (s_path.isEmpty()) {
+            req->send(400, "application/json", "{\"error\":\"path fehlt\"}");
+            return;
+        }
+        if (_usb->writeTextFile(s_path, s_body)) {
+            req->send(200, "application/json", "{\"ok\":true}");
+        } else {
+            req->send(500, "application/json", "{\"error\":\"Schreiben fehlgeschlagen\"}");
+        }
+    }
+}
+
+// ── WiFi-Scan ─────────────────────────────────────────────────────────
 
 void Webserver::handleWifiScan(AsyncWebServerRequest* req) {
     int n = WiFi.scanComplete();
     if (n == WIFI_SCAN_FAILED) {
-        WiFi.scanNetworks(true);  // async scan
+        WiFi.scanNetworks(true);
         req->send(202, "application/json", "{\"scanning\":true}");
         return;
     }
 
     JsonDocument doc;
     JsonArray networks = doc["networks"].to<JsonArray>();
-
     for (int i = 0; i < n; i++) {
         JsonObject net = networks.add<JsonObject>();
         net["ssid"] = WiFi.SSID(i);
         net["rssi"] = WiFi.RSSI(i);
         net["open"] = (WiFi.encryptionType(i) == WIFI_AUTH_OPEN);
     }
-
     WiFi.scanDelete();
+
     String json;
     serializeJson(doc, json);
     req->send(200, "application/json", json);
 }
 
+// ── WiFi-Connect ──────────────────────────────────────────────────────
+
 void Webserver::handleWifiConnect(AsyncWebServerRequest* req) {
     if (!req->hasParam("ssid", true) || !req->hasParam("password", true)) {
-        req->send(400, "application/json", "{\"error\":\"Missing ssid or password\"}");
+        req->send(400, "application/json", "{\"error\":\"ssid/password fehlt\"}");
         return;
     }
-
-    String ssid = req->getParam("ssid", true)->value();
+    String ssid = req->getParam("ssid",     true)->value();
     String pass = req->getParam("password", true)->value();
 
-    // Respond immediately, connect in background
-    req->send(200, "application/json", "{\"ok\":true,\"message\":\"Connecting...\"}");
+    req->send(200, "application/json",
+              "{\"ok\":true,\"message\":\"Verbinde ...\"}");
 
     wifiManager.connectToNetwork(ssid.c_str(), pass.c_str());
 }
