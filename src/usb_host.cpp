@@ -1,18 +1,54 @@
 #include "usb_host.h"
 
+// ── USB MSC Host: nur kompilieren wenn Komponente vorhanden ──────────
+#if __has_include("usb/msc_host.h")
+  #include <dirent.h>
+  #include <sys/stat.h>
+  #include <unistd.h>
+  #include <fcntl.h>
+  #include <errno.h>
+  #include "usb/usb_host.h"
+  #include "usb/msc_host.h"
+  #include "usb/msc_host_vfs.h"
+  #include "esp_vfs_fat.h"
+  #define HAS_MSC 1
+#else
+  #warning "usb/msc_host.h nicht gefunden – USB-Stick deaktiviert."
+  #warning "Komponente installieren: cp -r idf-extra-components/usb/usb_host_msc components/"
+  #define HAS_MSC 0
+#endif
+
+// ── Stub-Implementierung (kein Stick-Treiber) ─────────────────────────
+#if !HAS_MSC
+
+void UsbHost::begin() {
+    Serial.println("[USB] USB-Stick Treiber nicht verfügbar.");
+    Serial.println("[USB] Komponente 'usb_host_msc' in components/ ablegen.");
+}
+void UsbHost::loop() {}
+String UsbHost::getDeviceInfo() const { return "kein Treiber"; }
+bool UsbHost::listDirectory(const String&, std::vector<FileEntry>&) { return false; }
+bool UsbHost::readTextFile(const String&, String&) { return false; }
+bool UsbHost::writeTextFile(const String&, const String&) { return false; }
+size_t UsbHost::getFileSize(const String&) { return 0; }
+bool UsbHost::fileExists(const String&) { return false; }
+int UsbHost::readFileChunk(const String&, size_t, uint8_t*, size_t) { return -1; }
+bool UsbHost::writeFileChunk(const String&, size_t, const uint8_t*, size_t, bool) { return false; }
+bool UsbHost::deleteEntry(const String&) { return false; }
+bool UsbHost::createDirectory(const String&) { return false; }
+bool UsbHost::renameEntry(const String&, const String&) { return false; }
+String UsbHost::absPath(const String& rel) const { return rel; }
+void UsbHost::usbLibTask(void*) { vTaskDelete(nullptr); }
+void UsbHost::mscClientTask(void*) { vTaskDelete(nullptr); }
+
+#else
+// ── Volle Implementierung mit USB MSC Host ────────────────────────────
+
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
-
-// ESP-IDF USB Host + MSC VFS
-#include "usb/usb_host.h"
-#include "usb/msc_host.h"
-#include "usb/msc_host_vfs.h"
-#include "esp_vfs_fat.h"
-
-// ── Interne Handles ──────────────────────────────────────────────────
 
 static msc_host_device_handle_t  s_msc_device  = nullptr;
 static msc_host_vfs_handle_t     s_vfs_handle  = nullptr;
@@ -22,10 +58,7 @@ static EventGroupHandle_t        s_evt_group   = nullptr;
 #define EVT_DISCONNECTED (1 << 1)
 #define EVT_QUIT         (1 << 2)
 
-// ── MSC-Callback (vom USB-Host-Task aufgerufen) ─────────────────────
-
 static void msc_event_cb(const msc_host_event_t* event, void* arg) {
-    UsbHost* host = static_cast<UsbHost*>(arg);
     if (event->event == MSC_HOST_DEVICE_CONNECTED) {
         xEventGroupSetBits(s_evt_group, EVT_CONNECTED);
     } else if (event->event == MSC_HOST_DEVICE_DISCONNECTED) {
@@ -33,39 +66,25 @@ static void msc_event_cb(const msc_host_event_t* event, void* arg) {
     }
 }
 
-// ── USB Library Daemon (verarbeitet generische USB-Bus-Events) ───────
-
 void UsbHost::usbLibTask(void* arg) {
     while (true) {
         uint32_t flags = 0;
         usb_host_lib_handle_events(portMAX_DELAY, &flags);
-        if (flags & USB_HOST_LIB_EVENT_FLAGS_NO_CLIENTS) {
-            usb_host_device_free_all();
-        }
-        if (flags & USB_HOST_LIB_EVENT_FLAGS_ALL_FREE) {
-            // Alle Geräte freigegeben – Library kann deinstalliert werden
-            break;
-        }
+        if (flags & USB_HOST_LIB_EVENT_FLAGS_NO_CLIENTS) usb_host_device_free_all();
+        if (flags & USB_HOST_LIB_EVENT_FLAGS_ALL_FREE)   break;
     }
     vTaskDelete(nullptr);
 }
-
-// ── MSC Client Task (Mount/Unmount des USB-Sticks) ───────────────────
 
 void UsbHost::mscClientTask(void* arg) {
     UsbHost* self = static_cast<UsbHost*>(arg);
 
     msc_host_driver_config_t msc_cfg = {};
-    msc_cfg.task_priority = MSC_TASK_PRIO;
-    msc_cfg.stack_size    = MSC_TASK_STACK;
-    msc_cfg.callback      = msc_event_cb;
-    msc_cfg.callback_arg  = self;
-    // Feldname variiert je nach Komponentenversion
-#if defined(MSC_HOST_HAS_CREATE_BACKGROUND_TASK)
-    msc_cfg.create_background_task = true;
-#else
-    msc_cfg.create_backround_task  = true;  // typo in älterer API
-#endif
+    msc_cfg.task_priority         = MSC_TASK_PRIO;
+    msc_cfg.stack_size            = MSC_TASK_STACK;
+    msc_cfg.callback              = msc_event_cb;
+    msc_cfg.callback_arg          = self;
+    msc_cfg.create_backround_task = true;
     ESP_ERROR_CHECK(msc_host_install(&msc_cfg));
 
     bool quit = false;
@@ -73,50 +92,33 @@ void UsbHost::mscClientTask(void* arg) {
         EventBits_t bits = xEventGroupWaitBits(
             s_evt_group,
             EVT_CONNECTED | EVT_DISCONNECTED | EVT_QUIT,
-            pdTRUE,          // clear on exit
-            pdFALSE,         // wait for any
-            portMAX_DELAY);
+            pdTRUE, pdFALSE, portMAX_DELAY);
 
         if (bits & EVT_CONNECTED) {
-            // Ersten verfügbaren MSC-Port öffnen
             uint8_t dev_addr = 1;
             esp_err_t err = msc_host_install_device(dev_addr, &s_msc_device);
             if (err != ESP_OK) {
-                Serial.printf("[USB] msc_host_install_device failed: %s\n",
-                              esp_err_to_name(err));
+                Serial.printf("[USB] install_device: %s\n", esp_err_to_name(err));
                 continue;
             }
-
-            // Gerätebeschreibung auslesen (Feldnamen je nach IDF-Version)
             msc_host_device_info_t info = {};
             if (msc_host_get_device_info(s_msc_device, &info) == ESP_OK) {
-#if defined(CONFIG_IDF_TARGET_ESP32S2) && defined(MSC_HOST_INFO_USE_WCHAR)
-                // IDF 5.x: wchar_t Felder – in char kopieren
-                wcstombs(self->_vendor,  info.vendor_id,  sizeof(self->_vendor)  - 1);
-                wcstombs(self->_product, info.product_id, sizeof(self->_product) - 1);
-#else
-                // IDF 4.x / usb_host_msc <=1.0: char* Felder
                 snprintf(self->_vendor,  sizeof(self->_vendor),  "%s",
                          info.idVendor  ? (const char*)info.idVendor  : "?");
                 snprintf(self->_product, sizeof(self->_product), "%s",
-                         info.idProduct ? (const char*)info.idProduct : "USB-Stick");
-#endif
+                         info.idProduct ? (const char*)info.idProduct : "Stick");
             }
-
-            // FAT-Dateisystem auf VFS mounten
             esp_vfs_fat_mount_config_t fat_cfg = {};
             fat_cfg.format_if_mount_failed = false;
             fat_cfg.max_files              = 8;
-            fat_cfg.allocation_unit_size   = 0;
             err = msc_host_vfs_register(s_msc_device, USB_MOUNT_POINT,
                                         &fat_cfg, &s_vfs_handle);
             if (err == ESP_OK) {
                 self->_mounted = true;
-                Serial.printf("[USB] Gemountet: %s %s → %s\n",
+                Serial.printf("[USB] %s %s → %s\n",
                               self->_vendor, self->_product, USB_MOUNT_POINT);
             } else {
-                Serial.printf("[USB] VFS-Mount fehlgeschlagen: %s\n",
-                              esp_err_to_name(err));
+                Serial.printf("[USB] VFS-Mount: %s\n", esp_err_to_name(err));
                 msc_host_uninstall_device(s_msc_device);
                 s_msc_device = nullptr;
             }
@@ -124,57 +126,32 @@ void UsbHost::mscClientTask(void* arg) {
 
         if (bits & EVT_DISCONNECTED) {
             self->_mounted = false;
-            Serial.println("[USB] Stick getrennt – unmounte ...");
-
-            if (s_vfs_handle) {
-                msc_host_vfs_unregister(s_vfs_handle);
-                s_vfs_handle = nullptr;
-            }
-            if (s_msc_device) {
-                msc_host_uninstall_device(s_msc_device);
-                s_msc_device = nullptr;
-            }
-            memset(self->_vendor,  0, sizeof(self->_vendor));
+            if (s_vfs_handle)  { msc_host_vfs_unregister(s_vfs_handle); s_vfs_handle = nullptr; }
+            if (s_msc_device)  { msc_host_uninstall_device(s_msc_device); s_msc_device = nullptr; }
+            memset(self->_vendor, 0, sizeof(self->_vendor));
             memset(self->_product, 0, sizeof(self->_product));
+            Serial.println("[USB] Stick getrennt");
         }
 
-        if (bits & EVT_QUIT) {
-            quit = true;
-        }
+        if (bits & EVT_QUIT) quit = true;
     }
-
     msc_host_uninstall();
     vTaskDelete(nullptr);
 }
 
-// ── Public API ────────────────────────────────────────────────────────
-
 void UsbHost::begin() {
     Serial.println("[USB] Initialisiere USB Host ...");
-
     s_evt_group = xEventGroupCreate();
-
-    // USB Host Library installieren
-    usb_host_config_t host_cfg = {
-        .skip_phy_setup      = false,
-        .intr_flags          = ESP_INTR_FLAG_LEVEL1,
-    };
+    usb_host_config_t host_cfg = {};
+    host_cfg.skip_phy_setup = false;
+    host_cfg.intr_flags     = ESP_INTR_FLAG_LEVEL1;
     ESP_ERROR_CHECK(usb_host_install(&host_cfg));
-
-    // USB Library Daemon starten
-    xTaskCreate(usbLibTask, "usb_lib", USB_HOST_TASK_STACK,
-                nullptr, USB_HOST_TASK_PRIO, nullptr);
-
-    // MSC Client Task starten
-    xTaskCreate(mscClientTask, "msc_client", MSC_TASK_STACK,
-                this, MSC_TASK_PRIO, nullptr);
-
+    xTaskCreate(usbLibTask,   "usb_lib", USB_HOST_TASK_STACK, nullptr, USB_HOST_TASK_PRIO, nullptr);
+    xTaskCreate(mscClientTask,"msc_cli", MSC_TASK_STACK,      this,    MSC_TASK_PRIO,      nullptr);
     Serial.println("[USB] Warte auf USB-Stick ...");
 }
 
-void UsbHost::loop() {
-    // Alles via Tasks – hier nichts zu tun
-}
+void UsbHost::loop() {}
 
 String UsbHost::getDeviceInfo() const {
     if (!_mounted) return "nicht verbunden";
@@ -183,42 +160,27 @@ String UsbHost::getDeviceInfo() const {
     return String(buf);
 }
 
-// ── Hilfsfunktion: relativen Pfad zu absolutem USB-Pfad ─────────────
-
 String UsbHost::absPath(const String& rel) const {
     if (rel.startsWith(USB_MOUNT_POINT)) return rel;
     if (rel.startsWith("/")) return String(USB_MOUNT_POINT) + rel;
     return String(USB_MOUNT_POINT) + "/" + rel;
 }
 
-// ── Verzeichnis-Listing ───────────────────────────────────────────────
-
 bool UsbHost::listDirectory(const String& path, std::vector<FileEntry>& entries) {
     if (!_mounted) return false;
-
-    String full = absPath(path);
-    DIR* dir = opendir(full.c_str());
-    if (!dir) {
-        Serial.printf("[USB] opendir '%s' fehlgeschlagen: %s\n",
-                      full.c_str(), strerror(errno));
-        return false;
-    }
-
+    DIR* dir = opendir(absPath(path).c_str());
+    if (!dir) return false;
     struct dirent* ent;
     while ((ent = readdir(dir)) != nullptr) {
-        if (ent->d_name[0] == '.') continue;  // . und .. überspringen
-
+        if (ent->d_name[0] == '.') continue;
         FileEntry fe;
         fe.name  = ent->d_name;
         fe.isDir = (ent->d_type == DT_DIR);
         fe.size  = 0;
-
         if (!fe.isDir) {
-            String fp = full + "/" + ent->d_name;
             struct stat st;
-            if (stat(fp.c_str(), &st) == 0) {
-                fe.size = (size_t)st.st_size;
-            }
+            String fp = absPath(path) + "/" + ent->d_name;
+            if (stat(fp.c_str(), &st) == 0) fe.size = (size_t)st.st_size;
         }
         entries.push_back(fe);
     }
@@ -226,52 +188,29 @@ bool UsbHost::listDirectory(const String& path, std::vector<FileEntry>& entries)
     return true;
 }
 
-// ── Text-Datei lesen (Editor) ─────────────────────────────────────────
-
 bool UsbHost::readTextFile(const String& path, String& content) {
     if (!_mounted) return false;
-
     String full = absPath(path);
     struct stat st;
     if (stat(full.c_str(), &st) != 0) return false;
-    if ((size_t)st.st_size > EDITOR_MAX_SIZE) {
-        Serial.printf("[USB] readTextFile: Datei zu groß (%u Bytes)\n",
-                      (unsigned)st.st_size);
-        return false;
-    }
-
+    if ((size_t)st.st_size > EDITOR_MAX_SIZE) return false;
     FILE* f = fopen(full.c_str(), "r");
     if (!f) return false;
-
     content.reserve((size_t)st.st_size + 1);
     char buf[512];
-    while (!feof(f)) {
-        size_t n = fread(buf, 1, sizeof(buf), f);
-        if (n > 0) content.concat(buf, n);
-    }
+    while (!feof(f)) { size_t n = fread(buf, 1, sizeof(buf), f); if (n > 0) content.concat(buf, n); }
     fclose(f);
     return true;
 }
 
-// ── Text-Datei schreiben (Editor) ─────────────────────────────────────
-
 bool UsbHost::writeTextFile(const String& path, const String& content) {
     if (!_mounted) return false;
-
-    String full = absPath(path);
-    FILE* f = fopen(full.c_str(), "w");
-    if (!f) {
-        Serial.printf("[USB] writeTextFile: fopen '%s' fehlgeschlagen: %s\n",
-                      full.c_str(), strerror(errno));
-        return false;
-    }
-
-    size_t written = fwrite(content.c_str(), 1, content.length(), f);
+    FILE* f = fopen(absPath(path).c_str(), "w");
+    if (!f) return false;
+    size_t w = fwrite(content.c_str(), 1, content.length(), f);
     fclose(f);
-    return written == content.length();
+    return w == content.length();
 }
-
-// ── Dateigröße / Existenz ─────────────────────────────────────────────
 
 size_t UsbHost::getFileSize(const String& path) {
     if (!_mounted) return 0;
@@ -286,52 +225,35 @@ bool UsbHost::fileExists(const String& path) {
     return stat(absPath(path).c_str(), &st) == 0;
 }
 
-// ── Chunk-Lesen für Download-Streaming ───────────────────────────────
-
-int UsbHost::readFileChunk(const String& path, size_t offset,
-                           uint8_t* buf, size_t len) {
+int UsbHost::readFileChunk(const String& path, size_t offset, uint8_t* buf, size_t len) {
     if (!_mounted) return -1;
-
     FILE* f = fopen(absPath(path).c_str(), "rb");
     if (!f) return -1;
-
-    if (fseek(f, (long)offset, SEEK_SET) != 0) {
-        fclose(f);
-        return -1;
-    }
+    fseek(f, (long)offset, SEEK_SET);
     int n = (int)fread(buf, 1, len, f);
     fclose(f);
     return n;
 }
 
-// ── Chunk-Schreiben für Upload ────────────────────────────────────────
-
 bool UsbHost::writeFileChunk(const String& path, size_t offset,
-                             const uint8_t* data, size_t len, bool isFinal) {
+                             const uint8_t* data, size_t len, bool /*isFinal*/) {
     if (!_mounted) return false;
-
-    const char* mode = (offset == 0) ? "wb" : "ab";
-    FILE* f = fopen(absPath(path).c_str(), mode);
+    FILE* f = fopen(absPath(path).c_str(), offset == 0 ? "wb" : "ab");
     if (!f) return false;
-
     bool ok = (fwrite(data, 1, len, f) == len);
     fclose(f);
     return ok;
 }
 
-// ── Löschen ───────────────────────────────────────────────────────────
-
 static bool removeRecursive(const String& path) {
     struct stat st;
     if (stat(path.c_str(), &st) != 0) return false;
-
     if (S_ISDIR(st.st_mode)) {
         DIR* d = opendir(path.c_str());
         if (!d) return false;
         struct dirent* ent;
         while ((ent = readdir(d)) != nullptr) {
-            if (strcmp(ent->d_name, ".") == 0 ||
-                strcmp(ent->d_name, "..") == 0) continue;
+            if (strcmp(ent->d_name,".") == 0 || strcmp(ent->d_name,"..") == 0) continue;
             removeRecursive(path + "/" + ent->d_name);
         }
         closedir(d);
@@ -345,16 +267,14 @@ bool UsbHost::deleteEntry(const String& path) {
     return removeRecursive(absPath(path));
 }
 
-// ── Verzeichnis anlegen ───────────────────────────────────────────────
-
 bool UsbHost::createDirectory(const String& path) {
     if (!_mounted) return false;
     return mkdir(absPath(path).c_str(), 0755) == 0;
 }
 
-// ── Umbenennen / Verschieben ──────────────────────────────────────────
-
 bool UsbHost::renameEntry(const String& from, const String& to) {
     if (!_mounted) return false;
     return rename(absPath(from).c_str(), absPath(to).c_str()) == 0;
 }
+
+#endif // HAS_MSC
