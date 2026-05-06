@@ -11,15 +11,12 @@ int WebLogger::idfLogHook(const char* fmt, va_list args) {
     char buf[LOG_LINE_MAX];
     int n = vsnprintf(buf, sizeof(buf), fmt, args);
 
-    // Zeilenumbrüche am Ende entfernen
     int len = strlen(buf);
     while (len > 0 && (buf[len-1] == '\n' || buf[len-1] == '\r')) buf[--len] = '\0';
 
     if (len > 0) logger.write("", buf);
 
-    // Auch auf UART ausgeben
-    uart_write_bytes(UART_NUM_0, buf, n < (int)sizeof(buf) ? n : (int)sizeof(buf)-1);
-    uart_write_bytes(UART_NUM_0, "\n", 1);
+    Serial.println(buf);
     return n;
 }
 
