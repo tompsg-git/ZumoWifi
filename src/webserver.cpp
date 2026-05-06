@@ -1,4 +1,6 @@
 #include "webserver.h"
+#include "wifi_manager.h"
+#include <WiFi.h>
 
 extern WifiManager wifiManager;
 
@@ -149,9 +151,9 @@ void Webserver::handleDeleteFile(AsyncWebServerRequest* req) {
         return;
     }
     String path = req->getParam("path", true)->value();
-    req->send(_usb->deleteEntry(path) ? 200 : 500,
-              "application/json",
-              _usb->deleteEntry(path) ? "{\"ok\":true}" : "{\"error\":\"Löschen fehlgeschlagen\"}");
+    bool ok = _usb->deleteEntry(path);
+    req->send(ok ? 200 : 500, "application/json",
+              ok ? "{\"ok\":true}" : "{\"error\":\"Löschen fehlgeschlagen\"}");
 }
 
 // ── Umbenennen ────────────────────────────────────────────────────────

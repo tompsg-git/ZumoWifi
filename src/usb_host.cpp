@@ -55,13 +55,17 @@ void UsbHost::usbLibTask(void* arg) {
 void UsbHost::mscClientTask(void* arg) {
     UsbHost* self = static_cast<UsbHost*>(arg);
 
-    msc_host_driver_config_t msc_cfg = {
-        .create_backround_task = true,
-        .task_priority         = MSC_TASK_PRIO,
-        .stack_size            = MSC_TASK_STACK,
-        .callback              = msc_event_cb,
-        .callback_arg          = self,
-    };
+    msc_host_driver_config_t msc_cfg = {};
+    msc_cfg.task_priority = MSC_TASK_PRIO;
+    msc_cfg.stack_size    = MSC_TASK_STACK;
+    msc_cfg.callback      = msc_event_cb;
+    msc_cfg.callback_arg  = self;
+    // Feldname variiert je nach Komponentenversion
+#if defined(MSC_HOST_HAS_CREATE_BACKGROUND_TASK)
+    msc_cfg.create_background_task = true;
+#else
+    msc_cfg.create_backround_task  = true;  // typo in älterer API
+#endif
     ESP_ERROR_CHECK(msc_host_install(&msc_cfg));
 
     bool quit = false;
@@ -83,22 +87,27 @@ void UsbHost::mscClientTask(void* arg) {
                 continue;
             }
 
-            // Gerätebeschreibung auslesen
-            msc_host_device_info_t info;
+            // Gerätebeschreibung auslesen (Feldnamen je nach IDF-Version)
+            msc_host_device_info_t info = {};
             if (msc_host_get_device_info(s_msc_device, &info) == ESP_OK) {
+#if defined(CONFIG_IDF_TARGET_ESP32S2) && defined(MSC_HOST_INFO_USE_WCHAR)
+                // IDF 5.x: wchar_t Felder – in char kopieren
+                wcstombs(self->_vendor,  info.vendor_id,  sizeof(self->_vendor)  - 1);
+                wcstombs(self->_product, info.product_id, sizeof(self->_product) - 1);
+#else
+                // IDF 4.x / usb_host_msc <=1.0: char* Felder
                 snprintf(self->_vendor,  sizeof(self->_vendor),  "%s",
-                         info.idVendor  ? info.idVendor  : "?");
+                         info.idVendor  ? (const char*)info.idVendor  : "?");
                 snprintf(self->_product, sizeof(self->_product), "%s",
-                         info.idProduct ? info.idProduct : "USB-Stick");
+                         info.idProduct ? (const char*)info.idProduct : "USB-Stick");
+#endif
             }
 
             // FAT-Dateisystem auf VFS mounten
-            esp_vfs_fat_mount_config_t fat_cfg = {
-                .format_if_mount_failed      = false,
-                .max_files                   = 8,
-                .allocation_unit_size        = 0,
-                .disk_status_check_enable    = false,
-            };
+            esp_vfs_fat_mount_config_t fat_cfg = {};
+            fat_cfg.format_if_mount_failed = false;
+            fat_cfg.max_files              = 8;
+            fat_cfg.allocation_unit_size   = 0;
             err = msc_host_vfs_register(s_msc_device, USB_MOUNT_POINT,
                                         &fat_cfg, &s_vfs_handle);
             if (err == ESP_OK) {
