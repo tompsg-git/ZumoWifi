@@ -10,6 +10,12 @@ void WifiManager::startAP() {
 
     WiFi.mode(WIFI_AP);
 
+    // Explizite IP-Konfiguration – DHCP-Range 192.168.4.2–192.168.4.10
+    IPAddress ip(192, 168, 4, 1);
+    IPAddress gw(192, 168, 4, 1);
+    IPAddress nm(255, 255, 255, 0);
+    WiFi.softAPConfig(ip, gw, nm);
+
     // Stabiler AP: Channel 6, max 4 Clients, SSID sichtbar
     bool ok = (AP_PASSWORD[0] == '\0')
               ? WiFi.softAP(AP_SSID, nullptr, 6, 0, 4)
