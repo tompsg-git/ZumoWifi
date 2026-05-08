@@ -4,7 +4,7 @@
 
 // WiFi Access Point defaults
 #define AP_SSID       "ZumoWifi"
-#define AP_PASSWORD   "zumowifi123"
+#define AP_PASSWORD   ""          // leer = offenes Netz (kein Passwort)
 
 // Web server
 #define WEB_PORT      80
