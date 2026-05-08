@@ -1,6 +1,7 @@
 #pragma once
 
 #include <WiFi.h>
+#include "esp_wifi.h"
 #include "config.h"
 
 class WifiManager {

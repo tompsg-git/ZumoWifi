@@ -5,16 +5,36 @@ void WifiManager::begin() {
 }
 
 void WifiManager::startAP() {
-    WiFi.mode(WIFI_AP_STA);
-    WiFi.softAP(AP_SSID, AP_PASSWORD);
-    _apMode = true;
+    WiFi.disconnect(true);
+    delay(100);
 
-    Serial.printf("[WiFi] AP started: %s\n", AP_SSID);
-    Serial.printf("[WiFi] AP IP: %s\n", WiFi.softAPIP().toString().c_str());
+    WiFi.mode(WIFI_AP);
+
+    // Stabiler AP: Channel 6, max 4 Clients, SSID sichtbar
+    bool ok = (AP_PASSWORD[0] == '\0')
+              ? WiFi.softAP(AP_SSID, nullptr, 6, 0, 4)
+              : WiFi.softAP(AP_SSID, AP_PASSWORD, 6, 0, 4);
+
+    if (!ok) {
+        Serial.println("[WiFi] softAP fehlgeschlagen – nochmal ...");
+        delay(500);
+        WiFi.softAP(AP_SSID, AP_PASSWORD[0] ? AP_PASSWORD : nullptr, 6, 0, 4);
+    }
+
+    // Sendeleistung maximieren (hilft bei instabiler Verbindung)
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
+
+    // Power-Save deaktivieren
+    esp_wifi_set_ps(WIFI_PS_NONE);
+
+    _apMode = true;
+    Serial.printf("[WiFi] AP: %s  IP: %s\n",
+                  AP_SSID, WiFi.softAPIP().toString().c_str());
 }
 
 bool WifiManager::connectToNetwork(const char* ssid, const char* password) {
-    Serial.printf("[WiFi] Connecting to %s ...\n", ssid);
+    Serial.printf("[WiFi] Verbinde mit %s ...\n", ssid);
+    WiFi.mode(WIFI_AP_STA);
     WiFi.begin(ssid, password);
 
     unsigned long start = millis();
@@ -25,11 +45,12 @@ bool WifiManager::connectToNetwork(const char* ssid, const char* password) {
     Serial.println();
 
     if (WiFi.status() == WL_CONNECTED) {
-        Serial.printf("[WiFi] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+        _apMode = false;
+        Serial.printf("[WiFi] Verbunden! IP: %s\n", WiFi.localIP().toString().c_str());
         return true;
     }
 
-    Serial.println("[WiFi] Connection failed");
+    Serial.println("[WiFi] Verbindung fehlgeschlagen");
     return false;
 }
 
@@ -38,17 +59,12 @@ bool WifiManager::isConnected() {
 }
 
 String WifiManager::getIP() {
-    if (isConnected()) {
-        return WiFi.localIP().toString();
-    }
-    return WiFi.softAPIP().toString();
+    return isConnected() ? WiFi.localIP().toString()
+                         : WiFi.softAPIP().toString();
 }
 
 String WifiManager::getSSID() {
-    if (isConnected()) {
-        return WiFi.SSID();
-    }
-    return AP_SSID;
+    return isConnected() ? WiFi.SSID() : String(AP_SSID);
 }
 
 String WifiManager::getMode() {
@@ -59,10 +75,8 @@ void WifiManager::loop() {
     if (millis() - _lastCheck < 30000) return;
     _lastCheck = millis();
 
-    if (!_apMode) {
-        if (!isConnected()) {
-            Serial.println("[WiFi] Connection lost, restarting AP");
-            startAP();
-        }
+    if (!_apMode && !isConnected()) {
+        Serial.println("[WiFi] Verbindung verloren – AP neu starten");
+        startAP();
     }
 }
