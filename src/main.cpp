@@ -12,7 +12,7 @@ Webserver   webserver;
 
 void setup() {
     Serial.begin(115200);
-    delay(400);
+    delay(1500);  // Längere Wartezeit – Spannungsrampe bei Pin-Versorgung
 
     // Logger zuerst – ab jetzt landen alle LOGI/LOGW/LOGE im Web-Log
     logger.begin();
